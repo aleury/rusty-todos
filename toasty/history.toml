@@ -1,0 +1,6 @@
+version = 1
+
+[[migrations]]
+id = 8493142351673420155
+name = "0000_add_todos_table.sql"
+snapshot_name = "0000_snapshot.toml"

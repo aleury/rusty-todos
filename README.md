@@ -5,7 +5,7 @@ A simple todo-list web app built with Rust and [Topcoat](https://github.com/toki
 ## Run
 
 ```
-$ topcoat dev
+$ just dev
 ```
 
 Then open http://localhost:3000.

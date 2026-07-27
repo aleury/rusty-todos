@@ -1,6 +1,6 @@
-use std::sync::{Mutex, atomic::AtomicU64};
-
+use rusty_todos::Todo;
 use serde::Deserialize;
+use toasty::Db;
 use topcoat::{
     Result,
     asset::{AssetBundle, RouterBuilderAssetExt},
@@ -12,50 +12,36 @@ use topcoat::{
     tailwind,
     view::{component, view},
 };
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
-    let todos = Todos {
-        items: Mutex::new(vec![
-            Todo {
-                id: 1,
-                text: "Learn Rust".to_string(),
-                done: false,
-            },
-            Todo {
-                id: 2,
-                text: "Learn Topcoat".to_string(),
-                done: false,
-            },
-            Todo {
-                id: 3,
-                text: "Build a todo app with Topcoat & Rust".to_string(),
-                done: false,
-            },
-        ]),
-        next_id: AtomicU64::new(4),
-    };
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
+    // An in-memory database keeps the example self-contained; point the URL at
+    // a file (e.g. "sqlite:todos.db") to persist todos across restarts.
+    let db = Db::builder()
+        .models(toasty::models!(Todo))
+        .connect("sqlite:./todos.db")
+        .await
+        .unwrap();
 
     let router = Router::builder()
         .discover()
         .assets(AssetBundle::load().unwrap())
-        .app_context(todos)
+        .app_context(db)
         .build();
 
     topcoat::start(router).await.unwrap();
 }
 
-#[derive(Debug, Clone)]
-struct Todo {
-    id: u64,
-    text: String,
-    done: bool,
-}
-
-#[derive(Debug, Default)]
-struct Todos {
-    items: Mutex<Vec<Todo>>,
-    next_id: AtomicU64,
+// Toasty statements borrow the handle mutably, so each handler clones the
+// shared `Db` (a cheap handle to the underlying connection pool) out of app
+// context.
+fn db(cx: &Cx) -> Db {
+    app_context::<Db>(cx).clone()
 }
 
 #[layout("/")]
@@ -77,18 +63,20 @@ async fn root(slot: Slot<'_>) -> Result {
     }
 }
 
-fn get_todos(cx: &Cx) -> Vec<Todo> {
-    app_context::<Todos>(cx).items.lock().unwrap().clone()
-}
-
 #[page("/")]
 async fn home(cx: &Cx) -> Result {
     view! {
         heading(text:"Rusty Todos")
         todo_form()
+
+        let todos = Todo::all()
+            .order_by(Todo::fields().id().asc())
+            .exec(&mut db(cx))
+            .await?;
+
         <ul class="divide-y divide-slate-100">
-            for item in get_todos(cx) {
-                todo_row(todo: &item)
+            for todo in todos {
+                todo_row(todo: &todo)
             }
         </ul>
     }
@@ -133,9 +121,9 @@ async fn todo_row(todo: &Todo) -> Result {
                         class="h-4 w-4 cursor-pointer rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                     />
                     if todo.done {
-                        <s class="text-sm text-slate-400">(&todo.text)</s>
+                        <s class="text-sm text-slate-400">(&todo.title)</s>
                     } else {
-                        <span class="text-sm text-slate-700">(&todo.text)</span>
+                        <span class="text-sm text-slate-700">(&todo.title)</span>
                     }
                 </label>
             </form>
@@ -144,20 +132,6 @@ async fn todo_row(todo: &Todo) -> Result {
             </form>
         </li>
     }
-}
-
-#[path_param(error = bad_request)]
-struct TodoId(u64);
-
-#[route(POST "/todos/{todo_id}/toggle")]
-async fn toggle(cx: &Cx) -> Result<SeeOther> {
-    let todos = app_context::<Todos>(cx);
-    let todo_id = *path_param::<TodoId>(cx)?;
-    let mut items = todos.items.lock().expect("todo items");
-    if let Some(item) = items.iter_mut().find(|i| i.id == todo_id) {
-        item.done = !item.done;
-    }
-    Ok(see_other("/"))
 }
 
 #[derive(Deserialize)]
@@ -169,24 +143,27 @@ struct NewTodo {
 async fn create(cx: &Cx, Form(new_todo): Form<NewTodo>) -> Result<SeeOther> {
     let title = new_todo.title.trim();
     if !title.is_empty() {
-        let todos = app_context::<Todos>(cx);
-        let mut items = todos.items.lock().expect("todo items");
-        items.push(Todo {
-            id: todos
-                .next_id
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            text: title.to_string(),
-            done: false,
-        });
+        toasty::create!(Todo { title, done: false })
+            .exec(&mut db(cx))
+            .await?;
     }
+    Ok(see_other("/"))
+}
+
+#[path_param(error = bad_request)]
+struct TodoId(u64);
+
+#[route(POST "/todos/{todo_id}/toggle")]
+async fn toggle(cx: &Cx) -> Result<SeeOther> {
+    let mut db = db(cx);
+    let mut todo = Todo::get_by_id(&mut db, *path_param::<TodoId>(cx)?).await?;
+    let done = !todo.done;
+    toasty::update!(todo { done }).exec(&mut db).await?;
     Ok(see_other("/"))
 }
 
 #[route(POST "/todos/{todo_id}/delete")]
 async fn delete(cx: &Cx) -> Result<SeeOther> {
-    let todo_id = *path_param::<TodoId>(cx)?;
-    let todos = app_context::<Todos>(cx);
-    let mut items = todos.items.lock().expect("todo items");
-    items.retain(|i| i.id != todo_id);
+    Todo::delete_by_id(&mut db(cx), *path_param::<TodoId>(cx)?).await?;
     Ok(see_other("/"))
 }
