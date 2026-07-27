@@ -6,8 +6,8 @@ use topcoat::{
     asset::{AssetBundle, RouterBuilderAssetExt},
     context::{Cx, app_context},
     router::{
-        Form, Router, RouterBuilderDiscoverExt, SeeOther, Slot, layout, page, path_param, route,
-        see_other,
+        Form, Router, RouterBuilderDiscoverExt, SeeOther, Slot, layout, page, path_param,
+        query_params, route, see_other,
     },
     tailwind,
     view::{component, view},
@@ -63,22 +63,94 @@ async fn root(slot: Slot<'_>) -> Result {
     }
 }
 
+#[derive(Deserialize, PartialEq, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum Filter {
+    Active,
+    Done,
+}
+
+// Every field is optional, so an unrecognized value can safely reload the page
+// without a query string rather than answering a browsing user with a 400.
+#[query_params(error = redirect("?"))]
+struct TodoQuery {
+    filter: Option<Filter>,
+}
+
+// The POST routes carry no query string of their own, so the active filter
+// rides along on each form's action and is read back here to redirect the user
+// to the view they were looking at.
+fn query_suffix(filter: Option<Filter>) -> &'static str {
+    match filter {
+        Some(Filter::Active) => "?filter=active",
+        Some(Filter::Done) => "?filter=done",
+        None => "",
+    }
+}
+
+fn home_path(filter: Option<Filter>) -> &'static str {
+    match filter {
+        Some(Filter::Active) => "/?filter=active",
+        Some(Filter::Done) => "/?filter=done",
+        None => "/",
+    }
+}
+
+// Redirecting in response to a form submission would be surprising, so the POST
+// handlers treat an unparseable filter as no filter instead of using `?`.
+fn current_filter(cx: &Cx) -> Option<Filter> {
+    query_params::<TodoQuery>(cx).ok().and_then(|q| q.filter)
+}
+
 #[page("/")]
 async fn home(cx: &Cx) -> Result {
+    let filter = query_params::<TodoQuery>(cx)?.filter;
+
+    let mut query = Todo::all();
+    if let Some(filter) = filter {
+        query = query.filter(Todo::fields().done().eq(filter == Filter::Done));
+    }
+    let todos = query
+        .order_by(Todo::fields().created_at().asc())
+        .exec(&mut db(cx))
+        .await?;
+
     view! {
         heading(text:"Rusty Todos")
-        todo_form()
+        todo_form(filter: filter)
+        filter_links(current: filter)
 
-        let todos = Todo::all()
-            .order_by(Todo::fields().created_at().asc())
-            .exec(&mut db(cx))
-            .await?;
+        if todos.is_empty() {
+            <p class="py-2.5 text-sm text-slate-400">"Nothing here."</p>
+        } else {
+            <ul class="divide-y divide-slate-100">
+                for todo in todos {
+                    todo_row(todo: &todo, filter: filter)
+                }
+            </ul>
+        }
+    }
+}
 
-        <ul class="divide-y divide-slate-100">
-            for todo in todos {
-                todo_row(todo: &todo)
-            }
-        </ul>
+#[component]
+async fn filter_links(current: Option<Filter>) -> Result {
+    view! {
+        <nav class="mb-4 flex gap-3 text-sm">
+            filter_link(href: "/", label: "All", selected: current.is_none())
+            filter_link(href: "/?filter=active", label: "Active", selected: current == Some(Filter::Active))
+            filter_link(href: "/?filter=done", label: "Done", selected: current == Some(Filter::Done))
+        </nav>
+    }
+}
+
+#[component]
+async fn filter_link(href: &str, label: &str, selected: bool) -> Result {
+    view! {
+        if selected {
+            <a href=(href) class="font-medium text-indigo-600">(label)</a>
+        } else {
+            <a href=(href) class="text-slate-400 hover:text-slate-600">(label)</a>
+        }
     }
 }
 
@@ -90,9 +162,9 @@ async fn heading(text: &str) -> Result {
 }
 
 #[component]
-async fn todo_form() -> Result {
+async fn todo_form(filter: Option<Filter>) -> Result {
     view! {
-        <form method="post" action="/todos" class="mb-4 flex gap-2">
+        <form method="post" action=(("/todos", query_suffix(filter))) class="mb-4 flex gap-2">
             <input
                 type="text"
                 name="title"
@@ -131,7 +203,7 @@ fn zoned(ts: jiff::Timestamp, fmt: &str) -> String {
 }
 
 #[component]
-async fn todo_row(todo: &Todo) -> Result {
+async fn todo_row(todo: &Todo, filter: Option<Filter>) -> Result {
     // `created_at` and `updated_at` each evaluate their own `now()` at insert,
     // so they land microseconds apart on a brand new todo. Only treat a whole
     // second of drift as a real edit.
@@ -139,7 +211,7 @@ async fn todo_row(todo: &Todo) -> Result {
 
     view! {
         <li class="flex items-start gap-3 py-2.5">
-            <form method="post" action=(("/todos/", todo.id, "/toggle")) class="flex-1">
+            <form method="post" action=(("/todos/", todo.id, "/toggle", query_suffix(filter))) class="flex-1">
                 <label class="flex cursor-pointer items-start gap-3">
                     <input
                         type="checkbox"
@@ -167,7 +239,7 @@ async fn todo_row(todo: &Todo) -> Result {
                     </span>
                 </label>
             </form>
-            <form method="post" action=(("/todos/", todo.id, "/delete"))>
+            <form method="post" action=(("/todos/", todo.id, "/delete", query_suffix(filter)))>
                 <button type="submit" class="cursor-pointer text-sm text-slate-400 hover:text-red-600">"Delete"</button>
             </form>
         </li>
@@ -187,7 +259,7 @@ async fn create(cx: &Cx, Form(new_todo): Form<NewTodo>) -> Result<SeeOther> {
             .exec(&mut db(cx))
             .await?;
     }
-    Ok(see_other("/"))
+    Ok(see_other(home_path(current_filter(cx))))
 }
 
 #[path_param(error = bad_request)]
@@ -199,11 +271,11 @@ async fn toggle(cx: &Cx) -> Result<SeeOther> {
     let mut todo = Todo::get_by_id(&mut db, *path_param::<TodoId>(cx)?).await?;
     let done = !todo.done;
     toasty::update!(todo { done }).exec(&mut db).await?;
-    Ok(see_other("/"))
+    Ok(see_other(home_path(current_filter(cx))))
 }
 
 #[route(POST "/todos/{todo_id}/delete")]
 async fn delete(cx: &Cx) -> Result<SeeOther> {
     Todo::delete_by_id(&mut db(cx), *path_param::<TodoId>(cx)?).await?;
-    Ok(see_other("/"))
+    Ok(see_other(home_path(current_filter(cx))))
 }
