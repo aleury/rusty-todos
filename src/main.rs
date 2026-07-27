@@ -157,7 +157,7 @@ async fn filter_link(href: &str, label: &str, selected: bool) -> Result {
 #[component]
 async fn heading(text: &str) -> Result {
     view! {
-        <h1 class="mb-4 text-xl font-semibold text-slate-900">(text)</h1>
+        <h1 class="mb-4 text-center text-xl font-semibold text-slate-900">(text)</h1>
     }
 }
 
