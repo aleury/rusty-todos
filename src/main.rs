@@ -84,7 +84,26 @@ fn get_todos(cx: &Cx) -> Vec<Todo> {
 #[page("/")]
 async fn home(cx: &Cx) -> Result {
     view! {
-        <h1 class="mb-4 text-xl font-semibold text-slate-900">"Rusty Todos"</h1>
+        heading(text:"Rusty Todos")
+        todo_form()
+        <ul class="divide-y divide-slate-100">
+            for item in get_todos(cx) {
+                todo_row(todo: &item)
+            }
+        </ul>
+    }
+}
+
+#[component]
+async fn heading(text: &str) -> Result {
+    view! {
+        <h1 class="mb-4 text-xl font-semibold text-slate-900">(text)</h1>
+    }
+}
+
+#[component]
+async fn todo_form() -> Result {
+    view! {
         <form method="post" action="/todos" class="mb-4 flex gap-2">
             <input
                 type="text"
@@ -98,11 +117,6 @@ async fn home(cx: &Cx) -> Result {
                 class="cursor-pointer rounded-lg bg-indigo-600 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-700"
             >"Add"</button>
         </form>
-        <ul class="divide-y divide-slate-100">
-            for item in get_todos(cx) {
-                todo_row(todo: &item)
-            }
-        </ul>
     }
 }
 
