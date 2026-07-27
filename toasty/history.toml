@@ -4,3 +4,8 @@ version = 1
 id = 8493142351673420155
 name = "0000_add_todos_table.sql"
 snapshot_name = "0000_snapshot.toml"
+
+[[migrations]]
+id = 6183846427181598625
+name = "0001_add_timestamps_to_todos.sql"
+snapshot_name = "0001_snapshot.toml"

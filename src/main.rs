@@ -20,8 +20,8 @@ async fn main() {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    // An in-memory database keeps the example self-contained; point the URL at
-    // a file (e.g. "sqlite:todos.db") to persist todos across restarts.
+    // Toasty does not create tables on connect, so the schema has to be in
+    // place already: run `just migrate` before starting the server.
     let db = Db::builder()
         .models(toasty::models!(Todo))
         .connect("sqlite:./todos.db")
@@ -70,7 +70,7 @@ async fn home(cx: &Cx) -> Result {
         todo_form()
 
         let todos = Todo::all()
-            .order_by(Todo::fields().id().asc())
+            .order_by(Todo::fields().created_at().asc())
             .exec(&mut db(cx))
             .await?;
 
@@ -108,23 +108,63 @@ async fn todo_form() -> Result {
     }
 }
 
+// The full timestamp shown on hover, e.g. "Jul 27, 2026 at 12:08 AM".
+const HOVER_FORMAT: &str = "%b %-d, %Y at %-I:%M %p";
+
+// Coarse "time ago" wording, falling back to a bare date after a week. Every
+// action reloads the page, so a server-rendered relative time never goes stale.
+fn relative(ts: jiff::Timestamp) -> String {
+    let secs = (jiff::Timestamp::now().as_second() - ts.as_second()).max(0);
+    match secs {
+        s if s < 60 => "just now".to_string(),
+        s if s < 60 * 60 => format!("{}m ago", s / 60),
+        s if s < 60 * 60 * 24 => format!("{}h ago", s / (60 * 60)),
+        s if s < 60 * 60 * 24 * 7 => format!("{}d ago", s / (60 * 60 * 24)),
+        _ => zoned(ts, "%b %-d"),
+    }
+}
+
+fn zoned(ts: jiff::Timestamp, fmt: &str) -> String {
+    ts.to_zoned(jiff::tz::TimeZone::system())
+        .strftime(fmt)
+        .to_string()
+}
+
 #[component]
 async fn todo_row(todo: &Todo) -> Result {
+    // `created_at` and `updated_at` each evaluate their own `now()` at insert,
+    // so they land microseconds apart on a brand new todo. Only treat a whole
+    // second of drift as a real edit.
+    let edited = todo.updated_at.as_second() - todo.created_at.as_second() >= 1;
+
     view! {
-        <li class="flex items-center gap-3 py-2.5">
+        <li class="flex items-start gap-3 py-2.5">
             <form method="post" action=(("/todos/", todo.id, "/toggle")) class="flex-1">
-                <label class="flex cursor-pointer items-center gap-3">
+                <label class="flex cursor-pointer items-start gap-3">
                     <input
                         type="checkbox"
                         checked=(todo.done)
                         onchange="this.form.submit()"
-                        class="h-4 w-4 cursor-pointer rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+                        class="mt-0.5 h-4 w-4 cursor-pointer rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
                     />
-                    if todo.done {
-                        <s class="text-sm text-slate-400">(&todo.title)</s>
-                    } else {
-                        <span class="text-sm text-slate-700">(&todo.title)</span>
-                    }
+                    <span class="flex flex-col gap-0.5">
+                        if todo.done {
+                            <s class="text-sm text-slate-400">(&todo.title)</s>
+                        } else {
+                            <span class="text-sm text-slate-700">(&todo.title)</span>
+                        }
+                        <span class="text-xs text-slate-400">
+                            <span title=(zoned(todo.created_at, HOVER_FORMAT))>
+                                (relative(todo.created_at))
+                            </span>
+                            if edited {
+                                " · edited "
+                                <span title=(zoned(todo.updated_at, HOVER_FORMAT))>
+                                    (relative(todo.updated_at))
+                                </span>
+                            }
+                        </span>
+                    </span>
                 </label>
             </form>
             <form method="post" action=(("/todos/", todo.id, "/delete"))>
