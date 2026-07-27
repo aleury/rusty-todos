@@ -135,7 +135,7 @@ async fn home(cx: &Cx) -> Result {
 #[component]
 async fn filter_links(current: Option<Filter>) -> Result {
     view! {
-        <nav class="mb-4 flex gap-3 text-sm">
+        <nav class="mb-4 flex justify-center gap-3 text-sm">
             filter_link(href: "/", label: "All", selected: current.is_none())
             filter_link(href: "/?filter=active", label: "Active", selected: current == Some(Filter::Active))
             filter_link(href: "/?filter=done", label: "Done", selected: current == Some(Filter::Done))
